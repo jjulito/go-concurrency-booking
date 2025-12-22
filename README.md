@@ -35,8 +35,8 @@ graph TD
     LB -->|Round Robin| API[Go API Service]
     
     subgraph "Core Logic"
-        API -->|1. Acquire Lock| Redis[Redis (Locks & Cache)]
-        API -->|2. Read State| DB[(PostgreSQL)]
+        API -->|1. Acquire Lock| Redis["Redis (Locks & Cache)"]
+        API -->|2. Read State| DB[("PostgreSQL")]
         API -->|3. Atomic Update| DB
     end
 
