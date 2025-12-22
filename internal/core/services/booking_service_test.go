@@ -54,10 +54,19 @@ func (m *mockResRepo) CreateReservation(ctx context.Context, res *domain.Reserva
 	return nil
 }
 func (m *mockResRepo) GetReservation(ctx context.Context, id uuid.UUID) (*domain.Reservation, error) {
+	if m.CreatedRes != nil && m.CreatedRes.ID == id {
+		return m.CreatedRes, nil
+	}
 	return nil, nil
 }
 func (m *mockResRepo) UpdateStatus(ctx context.Context, id uuid.UUID, status domain.ReservationStatus) error {
+	if m.CreatedRes != nil && m.CreatedRes.ID == id {
+		m.CreatedRes.Status = status
+	}
 	return nil
+}
+func (m *mockResRepo) GetExpiredReservations(ctx context.Context) ([]domain.Reservation, error) {
+	return nil, nil
 }
 
 type mockEventRepo struct{}

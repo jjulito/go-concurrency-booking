@@ -17,7 +17,10 @@ import (
 type MockBookingService struct {
 	ListEventsFunc        func(ctx context.Context) ([]domain.Event, error)
 	GetEventSeatsFunc     func(ctx context.Context, eventID uuid.UUID) ([]domain.Seat, error)
-	CreateReservationFunc func(ctx context.Context, userID, seatID, eventID uuid.UUID) (*domain.Reservation, error)
+	CreateReservationFunc  func(ctx context.Context, userID, seatID, eventID uuid.UUID) (*domain.Reservation, error)
+	GetReservationFunc     func(ctx context.Context, reservationID uuid.UUID) (*domain.Reservation, error)
+	CancelReservationFunc  func(ctx context.Context, reservationID uuid.UUID) error
+	ConfirmReservationFunc func(ctx context.Context, reservationID uuid.UUID) error
 }
 
 func (m *MockBookingService) ListEvents(ctx context.Context) ([]domain.Event, error) {
@@ -37,6 +40,24 @@ func (m *MockBookingService) CreateReservation(ctx context.Context, userID, seat
 		return m.CreateReservationFunc(ctx, userID, seatID, eventID)
 	}
 	return nil, nil
+}
+func (m *MockBookingService) GetReservation(ctx context.Context, reservationID uuid.UUID) (*domain.Reservation, error) {
+	if m.GetReservationFunc != nil {
+		return m.GetReservationFunc(ctx, reservationID)
+	}
+	return nil, nil
+}
+func (m *MockBookingService) CancelReservation(ctx context.Context, reservationID uuid.UUID) error {
+	if m.CancelReservationFunc != nil {
+		return m.CancelReservationFunc(ctx, reservationID)
+	}
+	return nil
+}
+func (m *MockBookingService) ConfirmReservation(ctx context.Context, reservationID uuid.UUID) error {
+	if m.ConfirmReservationFunc != nil {
+		return m.ConfirmReservationFunc(ctx, reservationID)
+	}
+	return nil
 }
 
 // --- Tests ---
