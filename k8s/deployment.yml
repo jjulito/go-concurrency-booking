@@ -1,0 +1,44 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: reserva-api
+  labels:
+    app: reserva
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: reserva
+  template:
+    metadata:
+      labels:
+        app: reserva
+    spec:
+      containers:
+      - name: reserva-api
+        image: reserva-api:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8080
+        env:
+        - name: POSTGRES_HOST
+          value: "postgres"
+        - name: POSTGRES_USER
+          value: "reserva_user"
+        - name: POSTGRES_PASSWORD
+          value: "reserva_password"
+        - name: REDIS_HOST
+          value: "redis"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: reserva-api
+spec:
+  selector:
+    app: reserva
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: 8080
+  type: LoadBalancer
