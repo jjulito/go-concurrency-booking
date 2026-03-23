@@ -22,9 +22,13 @@ const (
 )
 
 var (
-	ErrSeatUnavailable = errors.New("seat is not available")
-	ErrSeatLocked      = errors.New("seat is currently locked")
-	ErrEventNotFound   = errors.New("event not found")
+	ErrSeatNotFound            = errors.New("seat not found")
+	ErrSeatUnavailable         = errors.New("seat is not available")
+	ErrSeatLocked              = errors.New("seat is currently locked")
+	ErrEventNotFound           = errors.New("event not found or no longer active")
+	ErrReservationNotFound     = errors.New("reservation not found")
+	ErrInvalidStatusTransition = errors.New("reservation status does not allow this action")
+	ErrUnauthorized            = errors.New("not authorized to perform this action")
 )
 
 // User entity
@@ -48,6 +52,7 @@ type Seat struct {
 	EventID    uuid.UUID  `json:"event_id"`
 	Number     string     `json:"seat_number"`
 	Category   string     `json:"category"`
+	Price      float64    `json:"price"`
 	Status     SeatStatus `json:"status"`
 	Version    int        `json:"version"` // Optimistic Locking
 	ReservedBy *uuid.UUID `json:"reserved_by,omitempty"`
@@ -60,8 +65,9 @@ type Reservation struct {
 	SeatID    uuid.UUID         `json:"seat_id"`
 	EventID   uuid.UUID         `json:"event_id"`
 	Status    ReservationStatus `json:"status"`
+	Amount    float64           `json:"amount"`
 	CreatedAt time.Time         `json:"created_at"`
-	ExpiresAt time.Time         `json:"expires_at"` // e.g., 5 minutes from creation
+	ExpiresAt time.Time         `json:"expires_at"`
 }
 
 func NewReservation(userID, seatID, eventID uuid.UUID, duration time.Duration) *Reservation {

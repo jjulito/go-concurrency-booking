@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jjulito/reserva/internal/core/domain"
+	"reserva/internal/core/domain"
 )
 
 // SeatRepository defines storage operations for seats
@@ -32,9 +32,16 @@ type EventRepository interface {
 
 // LockRepository defines distributed locking operations (Redis)
 type LockRepository interface {
-	// AcquireLock returns true if lock is acquired, false otherwise
-	AcquireLock(ctx context.Context, key string, ttl time.Duration) (bool, error)
-	ReleaseLock(ctx context.Context, key string) error
+	// AcquireLock returns (acquired, token, error). The token must be passed to ReleaseLock
+	// to prevent releasing a lock owned by another process.
+	AcquireLock(ctx context.Context, key string, ttl time.Duration) (acquired bool, token string, err error)
+	ReleaseLock(ctx context.Context, key, token string) error
+}
+
+// Transactor executes a function within a database transaction.
+// If fn returns an error the transaction is rolled back; otherwise it is committed.
+type Transactor interface {
+	WithinTransaction(ctx context.Context, fn func(ctx context.Context) error) error
 }
 
 // BookingService defines the business logic
@@ -43,7 +50,9 @@ type BookingService interface {
 	GetEventSeats(ctx context.Context, eventID uuid.UUID) ([]domain.Seat, error)
 	CreateReservation(ctx context.Context, userID, seatID, eventID uuid.UUID) (*domain.Reservation, error)
 	GetReservation(ctx context.Context, reservationID uuid.UUID) (*domain.Reservation, error)
-	CancelReservation(ctx context.Context, reservationID uuid.UUID) error
+	// CancelReservation cancels a pending reservation. userID is the authenticated
+	// caller; the service verifies they own the reservation before cancelling.
+	CancelReservation(ctx context.Context, reservationID, userID uuid.UUID) error
 	ConfirmReservation(ctx context.Context, reservationID uuid.UUID) error
 }
 
