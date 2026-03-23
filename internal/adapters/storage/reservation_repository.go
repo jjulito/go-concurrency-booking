@@ -2,12 +2,11 @@ package storage
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/jjulito/reserva/internal/core/domain"
+	"reserva/internal/core/domain"
 )
 
 type PostgresReservationRepository struct {
@@ -23,16 +22,13 @@ func (r *PostgresReservationRepository) CreateReservation(ctx context.Context, r
 		INSERT INTO reservations (id, user_id, seat_id, event_id, status, amount, created_at, expires_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 	`
-	// Assuming fixed amount for now or added to model
-	amount := 10.00 
-
-	_, err := r.db.Exec(ctx, query,
+	_, err := getQuerier(ctx, r.db).Exec(ctx, query,
 		res.ID,
 		res.UserID,
 		res.SeatID,
 		res.EventID,
 		res.Status,
-		amount,
+		res.Amount,
 		res.CreatedAt,
 		res.ExpiresAt,
 	)
@@ -40,8 +36,8 @@ func (r *PostgresReservationRepository) CreateReservation(ctx context.Context, r
 }
 
 func (r *PostgresReservationRepository) GetReservation(ctx context.Context, id uuid.UUID) (*domain.Reservation, error) {
-	query := `SELECT id, user_id, seat_id, event_id, status, created_at, expires_at FROM reservations WHERE id = $1`
-	row := r.db.QueryRow(ctx, query, id)
+	query := `SELECT id, user_id, seat_id, event_id, status, amount, created_at, expires_at FROM reservations WHERE id = $1`
+	row := getQuerier(ctx, r.db).QueryRow(ctx, query, id)
 
 	var res domain.Reservation
 	err := row.Scan(
@@ -50,12 +46,13 @@ func (r *PostgresReservationRepository) GetReservation(ctx context.Context, id u
 		&res.SeatID,
 		&res.EventID,
 		&res.Status,
+		&res.Amount,
 		&res.CreatedAt,
 		&res.ExpiresAt,
 	)
 	if err != nil {
 		if err == pgx.ErrNoRows {
-			return nil, fmt.Errorf("reservation not found")
+			return nil, domain.ErrReservationNotFound
 		}
 		return nil, err
 	}
@@ -64,24 +61,29 @@ func (r *PostgresReservationRepository) GetReservation(ctx context.Context, id u
 
 func (r *PostgresReservationRepository) UpdateStatus(ctx context.Context, id uuid.UUID, status domain.ReservationStatus) error {
 	query := `UPDATE reservations SET status = $1 WHERE id = $2`
-	_, err := r.db.Exec(ctx, query, status, id)
-	return err
+	cmdTag, err := getQuerier(ctx, r.db).Exec(ctx, query, status, id)
+	if err != nil {
+		return err
+	}
+	if cmdTag.RowsAffected() == 0 {
+		return domain.ErrReservationNotFound
+	}
+	return nil
 }
 
 func (r *PostgresReservationRepository) GetExpiredReservations(ctx context.Context) ([]domain.Reservation, error) {
-	// Query for PENDING reservations where expires_at < NOW()
 	query := `
-		SELECT id, user_id, seat_id, event_id, status, created_at, expires_at 
-		FROM reservations 
+		SELECT id, user_id, seat_id, event_id, status, amount, created_at, expires_at
+		FROM reservations
 		WHERE status = 'PENDING' AND expires_at < NOW()
 	`
-	rows, err := r.db.Query(ctx, query)
+	rows, err := getQuerier(ctx, r.db).Query(ctx, query)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var reservations []domain.Reservation
+	reservations := []domain.Reservation{}
 	for rows.Next() {
 		var res domain.Reservation
 		err := rows.Scan(
@@ -90,6 +92,7 @@ func (r *PostgresReservationRepository) GetExpiredReservations(ctx context.Conte
 			&res.SeatID,
 			&res.EventID,
 			&res.Status,
+			&res.Amount,
 			&res.CreatedAt,
 			&res.ExpiresAt,
 		)
@@ -97,6 +100,9 @@ func (r *PostgresReservationRepository) GetExpiredReservations(ctx context.Conte
 			return nil, err
 		}
 		reservations = append(reservations, res)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return reservations, nil
 }
