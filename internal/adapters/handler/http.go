@@ -1,31 +1,43 @@
 package handler
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/jjulito/reserva/internal/core/domain"
-	"github.com/jjulito/reserva/internal/core/ports"
+	"reserva/internal/core/domain"
+	"reserva/internal/core/ports"
 )
 
 type HTTPHandler struct {
-	bookingService ports.BookingService
+	bookingService      ports.BookingService
+	stripeWebhookSecret string
 }
 
-func NewHTTPHandler(bookingService ports.BookingService) *HTTPHandler {
-	return &HTTPHandler{bookingService: bookingService}
+func NewHTTPHandler(bookingService ports.BookingService, stripeWebhookSecret string) *HTTPHandler {
+	return &HTTPHandler{
+		bookingService:      bookingService,
+		stripeWebhookSecret: stripeWebhookSecret,
+	}
 }
 
 func (h *HTTPHandler) RegisterRoutes(router *gin.Engine) {
 	v1 := router.Group("/api/v1")
+
+	// Public routes — no authentication required
+	v1.GET("/events", h.ListEvents)
+	v1.GET("/events/:id/seats", h.GetEventSeats)
+	v1.GET("/reservations/:id", h.GetReservation)
+	v1.POST("/webhooks/stripe", h.HandleStripeWebhook)
+
+	// Protected routes — require a valid X-User-ID header (set by the API gateway
+	// after JWT verification; the service never handles raw tokens directly).
+	protected := v1.Group("/")
+	protected.Use(AuthMiddleware())
 	{
-		v1.GET("/events", h.ListEvents)
-		v1.GET("/events/:id/seats", h.GetEventSeats)
-		v1.POST("/reservations", h.CreateReservation)
-		v1.GET("/reservations/:id", h.GetReservation)
-		v1.POST("/reservations/:id/cancel", h.CancelReservation)
-		v1.POST("/webhooks/stripe", h.HandleStripeWebhook)
+		protected.POST("/reservations", h.CreateReservation)
+		protected.POST("/reservations/:id/cancel", h.CancelReservation)
 	}
 }
 
@@ -61,15 +73,20 @@ func (h *HTTPHandler) GetEventSeats(c *gin.Context) {
 
 	seats, err := h.bookingService.GetEventSeats(c.Request.Context(), eventID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		if errors.Is(err, domain.ErrEventNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Event not found or no longer active"})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		}
 		return
 	}
 	c.JSON(http.StatusOK, seats)
 }
 
+// CreateReservationRequest no longer includes user_id — the authenticated user's
+// identity is taken from the X-User-ID header injected by the API gateway.
 type CreateReservationRequest struct {
-	UserID  string `json:"user_id" binding:"required"`
-	SeatID  string `json:"seat_id" binding:"required"`
+	SeatID  string `json:"seat_id"  binding:"required"`
 	EventID string `json:"event_id" binding:"required"`
 }
 
@@ -82,23 +99,36 @@ type CreateReservationRequest struct {
 // @Failure 409 {object} map[string]string "Seat unavailable or locked"
 // @Router /reservations [post]
 func (h *HTTPHandler) CreateReservation(c *gin.Context) {
+	userID := c.MustGet(userIDKey).(uuid.UUID)
+
 	var req CreateReservationRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	userID, _ := uuid.Parse(req.UserID)
-	seatID, _ := uuid.Parse(req.SeatID)
-	eventID, _ := uuid.Parse(req.EventID)
+	seatID, err := uuid.Parse(req.SeatID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid seat_id: must be a UUID"})
+		return
+	}
+	eventID, err := uuid.Parse(req.EventID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid event_id: must be a UUID"})
+		return
+	}
 
 	reservation, err := h.bookingService.CreateReservation(c.Request.Context(), userID, seatID, eventID)
 	if err != nil {
-		switch err {
-		case domain.ErrSeatLocked:
+		switch {
+		case errors.Is(err, domain.ErrSeatLocked):
 			c.JSON(http.StatusConflict, gin.H{"error": "Seat is currently locked by another user"})
-		case domain.ErrSeatUnavailable:
+		case errors.Is(err, domain.ErrSeatUnavailable):
 			c.JSON(http.StatusConflict, gin.H{"error": "Seat is already reserved"})
+		case errors.Is(err, domain.ErrSeatNotFound):
+			c.JSON(http.StatusNotFound, gin.H{"error": "Seat not found"})
+		case errors.Is(err, domain.ErrEventNotFound):
+			c.JSON(http.StatusNotFound, gin.H{"error": "Event not found or no longer active"})
 		default:
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		}
@@ -125,7 +155,11 @@ func (h *HTTPHandler) GetReservation(c *gin.Context) {
 
 	reservation, err := h.bookingService.GetReservation(c.Request.Context(), id)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Reservation not found"})
+		if errors.Is(err, domain.ErrReservationNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Reservation not found"})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		}
 		return
 	}
 
@@ -139,6 +173,8 @@ func (h *HTTPHandler) GetReservation(c *gin.Context) {
 // @Success 200 {object} map[string]string
 // @Router /reservations/{id}/cancel [post]
 func (h *HTTPHandler) CancelReservation(c *gin.Context) {
+	userID := c.MustGet(userIDKey).(uuid.UUID)
+
 	idStr := c.Param("id")
 	id, err := uuid.Parse(idStr)
 	if err != nil {
@@ -146,9 +182,18 @@ func (h *HTTPHandler) CancelReservation(c *gin.Context) {
 		return
 	}
 
-	err = h.bookingService.CancelReservation(c.Request.Context(), id)
+	err = h.bookingService.CancelReservation(c.Request.Context(), id, userID)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		switch {
+		case errors.Is(err, domain.ErrReservationNotFound):
+			c.JSON(http.StatusNotFound, gin.H{"error": "Reservation not found"})
+		case errors.Is(err, domain.ErrUnauthorized):
+			c.JSON(http.StatusForbidden, gin.H{"error": "You are not the owner of this reservation"})
+		case errors.Is(err, domain.ErrInvalidStatusTransition):
+			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+		default:
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		}
 		return
 	}
 

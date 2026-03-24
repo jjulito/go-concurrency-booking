@@ -1,10 +1,21 @@
 package handler
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"net/http"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"reserva/internal/core/domain"
 )
 
 // StripeWebhookPayload matches the structure of Stripe event objects
@@ -28,21 +39,47 @@ type StripeWebhookPayload struct {
 // @Success 200 {string} string "Received"
 // @Router /webhooks/stripe [post]
 func (h *HTTPHandler) HandleStripeWebhook(c *gin.Context) {
+	// Read raw body first — signature verification requires the exact bytes Stripe sent.
+	rawBody, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to read request body"})
+		return
+	}
+
+	// Verify the Stripe-Signature header before trusting any payload content.
+	sigHeader := c.GetHeader("Stripe-Signature")
+	if err := verifyStripeSignature(rawBody, sigHeader, h.stripeWebhookSecret); err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid webhook signature"})
+		return
+	}
+
 	var payload StripeWebhookPayload
-	if err := c.ShouldBindJSON(&payload); err != nil {
+	if err := json.Unmarshal(rawBody, &payload); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid payload"})
 		return
 	}
 
-	// Only handle checkout.session.completed
 	if payload.Type == "checkout.session.completed" {
 		resIDStr := payload.Data.Object.Metadata.ReservationID
 		paymentStatus := payload.Data.Object.PaymentStatus
 
 		if paymentStatus == "paid" {
-			// Update reservation status
-			resID, _ := uuid.Parse(resIDStr)
+			resID, err := uuid.Parse(resIDStr)
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid reservation_id in webhook metadata"})
+				return
+			}
+
 			if err := h.bookingService.ConfirmReservation(c.Request.Context(), resID); err != nil {
+				// Business errors (expired reservation, wrong state, already processed) must
+				// return 2xx so Stripe does NOT retry the webhook. Retrying won't help and
+				// Stripe will keep sending the event for up to 3 days otherwise.
+				if errors.Is(err, domain.ErrInvalidStatusTransition) ||
+					errors.Is(err, domain.ErrReservationNotFound) {
+					c.JSON(http.StatusOK, gin.H{"status": "already_processed"})
+					return
+				}
+				// Infrastructure errors (DB down, etc.) return 500 so Stripe retries later.
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to confirm reservation"})
 				return
 			}
@@ -50,4 +87,59 @@ func (h *HTTPHandler) HandleStripeWebhook(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"status": "received"})
+}
+
+// verifyStripeSignature validates the Stripe-Signature header using HMAC-SHA256.
+//
+// Stripe format: "t=<unix_timestamp>,v1=<hex_signature>"
+//
+// Steps:
+//  1. Parse timestamp (t) and signature (v1) from the header.
+//  2. Reject events older than 5 minutes to prevent replay attacks.
+//  3. Compute HMAC-SHA256(secret, "<t>.<rawBody>") and compare with v1.
+func verifyStripeSignature(payload []byte, sigHeader, secret string) error {
+	if sigHeader == "" || secret == "" {
+		return fmt.Errorf("missing Stripe-Signature header or webhook secret")
+	}
+
+	var timestamp, v1Sig string
+	for _, part := range strings.Split(sigHeader, ",") {
+		kv := strings.SplitN(part, "=", 2)
+		if len(kv) != 2 {
+			continue
+		}
+		switch kv[0] {
+		case "t":
+			timestamp = kv[1]
+		case "v1":
+			v1Sig = kv[1]
+		}
+	}
+
+	if timestamp == "" || v1Sig == "" {
+		return fmt.Errorf("invalid Stripe-Signature header format")
+	}
+
+	ts, err := strconv.ParseInt(timestamp, 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid timestamp in Stripe-Signature header")
+	}
+
+	// Reject events older than 5 minutes (replay attack prevention)
+	if time.Since(time.Unix(ts, 0)) > 5*time.Minute {
+		return fmt.Errorf("webhook timestamp too old: possible replay attack")
+	}
+
+	// signed_payload = timestamp + "." + raw_body
+	signedPayload := fmt.Sprintf("%s.%s", timestamp, string(payload))
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(signedPayload))
+	expected := hex.EncodeToString(mac.Sum(nil))
+
+	// Use hmac.Equal for constant-time comparison (prevents timing attacks)
+	if !hmac.Equal([]byte(expected), []byte(v1Sig)) {
+		return fmt.Errorf("webhook signature mismatch")
+	}
+
+	return nil
 }
