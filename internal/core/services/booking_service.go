@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jjulito/reserva/internal/core/domain"
-	"github.com/jjulito/reserva/internal/core/ports"
+	"reserva/internal/core/domain"
+	"reserva/internal/core/ports"
 )
 
 type BookingService struct {
@@ -15,6 +15,7 @@ type BookingService struct {
 	reservationRepo ports.ReservationRepository
 	eventRepo       ports.EventRepository
 	lockRepo        ports.LockRepository
+	transactor      ports.Transactor
 }
 
 func NewBookingService(
@@ -22,12 +23,14 @@ func NewBookingService(
 	reservationRepo ports.ReservationRepository,
 	eventRepo ports.EventRepository,
 	lockRepo ports.LockRepository,
+	transactor ports.Transactor,
 ) *BookingService {
 	return &BookingService{
 		seatRepo:        seatRepo,
 		reservationRepo: reservationRepo,
 		eventRepo:       eventRepo,
 		lockRepo:        lockRepo,
+		transactor:      transactor,
 	}
 }
 
@@ -36,48 +39,71 @@ func (s *BookingService) ListEvents(ctx context.Context) ([]domain.Event, error)
 }
 
 func (s *BookingService) GetEventSeats(ctx context.Context, eventID uuid.UUID) ([]domain.Seat, error) {
+	event, err := s.eventRepo.GetEvent(ctx, eventID)
+	if err != nil || event == nil || !event.IsActive {
+		return nil, domain.ErrEventNotFound
+	}
 	return s.seatRepo.GetSeatsByEvent(ctx, eventID)
 }
 
-// CreateReservation attempts to reserve a seat handling race conditions
+// CreateReservation attempts to reserve a seat with full race-condition protection:
+//  1. Redis distributed lock — prevents concurrent processing of the same seat.
+//  2. DB transaction — ensures the seat update and reservation insert are atomic;
+//     if either fails the other is rolled back, eliminating partial-failure states.
+//  3. Optimistic locking — the seat update only succeeds if the version matches,
+//     catching any concurrent modification that slipped past the Redis lock.
 func (s *BookingService) CreateReservation(ctx context.Context, userID, seatID, eventID uuid.UUID) (*domain.Reservation, error) {
-	// 1. Distributed Lock (Redis) - Fail fast if someone is already processing this seat
+	// 1. Distributed Lock — fail fast if another process is already booking this seat
 	lockKey := fmt.Sprintf("lock:seat:%s", seatID.String())
-	acquired, err := s.lockRepo.AcquireLock(ctx, lockKey, 5*time.Second)
+	acquired, token, err := s.lockRepo.AcquireLock(ctx, lockKey, 5*time.Second)
 	if err != nil {
 		return nil, fmt.Errorf("failed to acquire lock: %w", err)
 	}
 	if !acquired {
-		return nil, domain.ErrSeatLocked // Someone else is processing it right now
+		return nil, domain.ErrSeatLocked
 	}
-	defer s.lockRepo.ReleaseLock(ctx, lockKey)
+	defer s.lockRepo.ReleaseLock(ctx, lockKey, token)
 
-	// 2. Fetch Seat State
-	seat, err := s.seatRepo.GetSeat(ctx, seatID)
+	// 2. Atomic transaction: validate, then write seat + reservation together
+	var reservation *domain.Reservation
+	err = s.transactor.WithinTransaction(ctx, func(ctx context.Context) error {
+		// Validate the event exists and is currently active
+		event, err := s.eventRepo.GetEvent(ctx, eventID)
+		if err != nil || event == nil || !event.IsActive {
+			return domain.ErrEventNotFound
+		}
+
+		// Fetch the seat (also acquires the row for version check later)
+		seat, err := s.seatRepo.GetSeat(ctx, seatID)
+		if err != nil {
+			return fmt.Errorf("failed to get seat: %w", err)
+		}
+
+		// Validate the seat actually belongs to the requested event
+		if seat.EventID != eventID {
+			return domain.ErrSeatUnavailable
+		}
+
+		if seat.Status != domain.SeatAvailable {
+			return domain.ErrSeatUnavailable
+		}
+
+		reservation = domain.NewReservation(userID, seatID, eventID, 5*time.Minute)
+		reservation.Amount = seat.Price // price comes from the seat, not hardcoded
+
+		if err := s.seatRepo.UpdateSeatStatus(ctx, seatID, domain.SeatLocked, &userID, seat.Version); err != nil {
+			// Version mismatch means concurrent modification despite the lock
+			return domain.ErrSeatUnavailable
+		}
+
+		if err := s.reservationRepo.CreateReservation(ctx, reservation); err != nil {
+			return fmt.Errorf("failed to save reservation: %w", err)
+		}
+
+		return nil
+	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to get seat: %w", err)
-	}
-
-	// 3. Domain Validation
-	if seat.Status != domain.SeatAvailable {
-		return nil, domain.ErrSeatUnavailable
-	}
-
-	// 4. Create Reservation Object
-	reservation := domain.NewReservation(userID, seatID, eventID, 5*time.Minute)
-
-	// 5. Transactional Update (Optimistic Locking via Repository)
-	// We update seat status to LOCKED, increment version, and set reserved_by
-	// The repository method MUST ensure it only updates if version matches seat.Version
-	err = s.seatRepo.UpdateSeatStatus(ctx, seatID, domain.SeatLocked, &userID, seat.Version)
-	if err != nil {
-		// If this fails, it means the version changed between Read (step 2) and Write (step 5)
-		return nil, domain.ErrSeatUnavailable
-	}
-
-	// 6. Save Reservation
-	if err := s.reservationRepo.CreateReservation(ctx, reservation); err != nil {
-		return nil, fmt.Errorf("failed to save reservation: %w", err)
+		return nil, err
 	}
 
 	return reservation, nil
@@ -87,80 +113,69 @@ func (s *BookingService) GetReservation(ctx context.Context, reservationID uuid.
 	return s.reservationRepo.GetReservation(ctx, reservationID)
 }
 
-func (s *BookingService) CancelReservation(ctx context.Context, reservationID uuid.UUID) error {
-	// 1. Get Reservation
-	reservation, err := s.reservationRepo.GetReservation(ctx, reservationID)
-	if err != nil {
-		return err
-	}
+// CancelReservation cancels a reservation and releases its seat atomically.
+// userID must match the reservation owner; ErrUnauthorized is returned otherwise.
+// Both the reservation status update and the seat release happen in a single
+// transaction: if either fails, neither is persisted.
+func (s *BookingService) CancelReservation(ctx context.Context, reservationID, userID uuid.UUID) error {
+	return s.transactor.WithinTransaction(ctx, func(ctx context.Context) error {
+		reservation, err := s.reservationRepo.GetReservation(ctx, reservationID)
+		if err != nil {
+			return err
+		}
 
-	// 2. Validate Status
-	if reservation.Status != domain.ReservationPending {
-		return fmt.Errorf("cannot cancel reservation in status: %s", reservation.Status)
-	}
+		if reservation.UserID != userID {
+			return domain.ErrUnauthorized
+		}
 
-	// 3. Update Reservation Status
-	err = s.reservationRepo.UpdateStatus(ctx, reservationID, domain.ReservationCancelled)
-	if err != nil {
-		return err
-	}
+		if reservation.Status != domain.ReservationPending {
+			return fmt.Errorf("cannot cancel reservation in status %s: %w", reservation.Status, domain.ErrInvalidStatusTransition)
+		}
 
-	// 4. Release Seat
-	seat, err := s.seatRepo.GetSeat(ctx, reservation.SeatID)
-	if err != nil {
-		// Log error? The reservation is cancelled but seat might be stuck.
-		return err
-	}
+		if err := s.reservationRepo.UpdateStatus(ctx, reservationID, domain.ReservationCancelled); err != nil {
+			return err
+		}
 
-	// We optimistically update the seat back to AVAILABLE.
-	// We don't need a ReservedBy here anymore.
-	err = s.seatRepo.UpdateSeatStatus(ctx, reservation.SeatID, domain.SeatAvailable, nil, seat.Version)
-	if err != nil {
-		return fmt.Errorf("failed to release seat: %w", err)
-	}
+		seat, err := s.seatRepo.GetSeat(ctx, reservation.SeatID)
+		if err != nil {
+			return err
+		}
 
-	return nil
+		return s.seatRepo.UpdateSeatStatus(ctx, reservation.SeatID, domain.SeatAvailable, nil, seat.Version)
+	})
 }
 
 // ConfirmReservation finalizes a reservation after payment.
-// It updates the reservation status to PAID and the seat status to RESERVED.
+// The reservation status update and seat status update are atomic:
+// both succeed or both are rolled back.
 func (s *BookingService) ConfirmReservation(ctx context.Context, reservationID uuid.UUID) error {
-	// 1. Get Reservation
-	reservation, err := s.reservationRepo.GetReservation(ctx, reservationID)
-	if err != nil {
-		return err
-	}
-
-	// 2. Validate Status
-	if reservation.Status != domain.ReservationPending {
-		// If already paid, idempotent success
-		if reservation.Status == domain.ReservationPaid {
-			return nil
+	return s.transactor.WithinTransaction(ctx, func(ctx context.Context) error {
+		reservation, err := s.reservationRepo.GetReservation(ctx, reservationID)
+		if err != nil {
+			return err
 		}
-		return fmt.Errorf("cannot confirm reservation in status: %s", reservation.Status)
-	}
 
-	// 3. Update Reservation to PAID
-	err = s.reservationRepo.UpdateStatus(ctx, reservationID, domain.ReservationPaid)
-	if err != nil {
-		return err
-	}
+		if reservation.Status != domain.ReservationPending {
+			if reservation.Status == domain.ReservationPaid {
+				return nil // idempotent
+			}
+			return fmt.Errorf("cannot confirm reservation in status %s: %w", reservation.Status, domain.ErrInvalidStatusTransition)
+		}
 
-	// 4. Update Seat to RESERVED
-	// We use the last known version from the repo or just force update if we trust the business flow?
-	// Optimistic locking is still good practice.
-	// We need to fetch the seat first to get version.
-	seat, err := s.seatRepo.GetSeat(ctx, reservation.SeatID)
-	if err != nil {
-		return err
-	}
+		// Guard against the race window between expiry and cleanup worker
+		if time.Now().After(reservation.ExpiresAt) {
+			return fmt.Errorf("reservation has expired: %w", domain.ErrInvalidStatusTransition)
+		}
 
-	// Transition from LOCKED to RESERVED
-	// Note: 'reservedBy' should already be set, but we confirm it.
-	err = s.seatRepo.UpdateSeatStatus(ctx, reservation.SeatID, domain.SeatReserved, &reservation.UserID, seat.Version)
-	if err != nil {
-		return fmt.Errorf("failed to finalize seat status: %w", err)
-	}
+		if err := s.reservationRepo.UpdateStatus(ctx, reservationID, domain.ReservationPaid); err != nil {
+			return err
+		}
 
-	return nil
+		seat, err := s.seatRepo.GetSeat(ctx, reservation.SeatID)
+		if err != nil {
+			return err
+		}
+
+		return s.seatRepo.UpdateSeatStatus(ctx, reservation.SeatID, domain.SeatReserved, &reservation.UserID, seat.Version)
+	})
 }
