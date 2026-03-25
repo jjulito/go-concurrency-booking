@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS seats (
     event_id UUID NOT NULL REFERENCES events(id) ON DELETE CASCADE,
     seat_number VARCHAR(50) NOT NULL,
     category VARCHAR(50) DEFAULT 'STANDARD',
+    price DECIMAL(10, 2) NOT NULL DEFAULT 0.00,
     status seat_status DEFAULT 'AVAILABLE',
     version INT DEFAULT 0, -- Optimistic Lock Version
     reserved_by UUID, -- Can be null, references users(id)
@@ -51,3 +52,6 @@ CREATE TABLE IF NOT EXISTS reservations (
 CREATE INDEX idx_seats_event_status ON seats(event_id, status);
 CREATE INDEX idx_reservations_user ON reservations(user_id);
 CREATE INDEX idx_reservations_status ON reservations(status);
+-- Composite partial index for the expired-reservations cleanup query:
+-- WHERE status = 'PENDING' AND expires_at < NOW()
+CREATE INDEX idx_reservations_pending_expires ON reservations(expires_at) WHERE status = 'PENDING';
