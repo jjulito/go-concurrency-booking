@@ -1,3 +1,11 @@
+# Before applying this manifest, create the required Secrets:
+#
+#   kubectl create secret generic reserva-secrets \
+#     --from-literal=postgres-user=reserva_user \
+#     --from-literal=postgres-password=<STRONG_PASSWORD> \
+#     --from-literal=redis-password=<REDIS_PASSWORD> \
+#     --from-literal=stripe-webhook-secret=<STRIPE_SECRET>
+#
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -23,12 +31,61 @@ spec:
         env:
         - name: POSTGRES_HOST
           value: "postgres"
+        - name: POSTGRES_PORT
+          value: "5432"
+        - name: POSTGRES_DB
+          value: "reserva_db"
+        - name: POSTGRES_SSLMODE
+          value: "require"
         - name: POSTGRES_USER
-          value: "reserva_user"
+          valueFrom:
+            secretKeyRef:
+              name: reserva-secrets
+              key: postgres-user
         - name: POSTGRES_PASSWORD
-          value: "reserva_password"
+          valueFrom:
+            secretKeyRef:
+              name: reserva-secrets
+              key: postgres-password
         - name: REDIS_HOST
           value: "redis"
+        - name: REDIS_PORT
+          value: "6379"
+        - name: REDIS_DB
+          value: "0"
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: reserva-secrets
+              key: redis-password
+        - name: STRIPE_WEBHOOK_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: reserva-secrets
+              key: stripe-webhook-secret
+        - name: APP_PORT
+          value: "8080"
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "500m"
+            memory: "256Mi"
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 15
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          failureThreshold: 3
 ---
 apiVersion: v1
 kind: Service
