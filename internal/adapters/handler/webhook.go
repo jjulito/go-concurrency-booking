@@ -125,9 +125,12 @@ func verifyStripeSignature(payload []byte, sigHeader, secret string) error {
 		return fmt.Errorf("invalid timestamp in Stripe-Signature header")
 	}
 
-	// Reject events older than 5 minutes (replay attack prevention)
-	if time.Since(time.Unix(ts, 0)) > 5*time.Minute {
-		return fmt.Errorf("webhook timestamp too old: possible replay attack")
+	// Reject events outside a 5-minute window (replay attack prevention)
+	eventTime := time.Unix(ts, 0)
+	now := time.Now()
+	delta := now.Sub(eventTime)
+	if delta > 5*time.Minute || delta < -5*time.Minute {
+		return fmt.Errorf("webhook timestamp outside allowed window: possible replay attack")
 	}
 
 	// signed_payload = timestamp + "." + raw_body
