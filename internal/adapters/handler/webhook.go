@@ -91,18 +91,22 @@ func (h *HTTPHandler) HandleStripeWebhook(c *gin.Context) {
 
 // verifyStripeSignature validates the Stripe-Signature header using HMAC-SHA256.
 //
-// Stripe format: "t=<unix_timestamp>,v1=<hex_signature>"
+// Stripe format: "t=<unix_timestamp>,v1=<hex_signature>[,v1=<hex_signature>...]"
+//
+// Stripe may include multiple v1 signatures during webhook secret rotation.
+// The event is accepted if any v1 value matches the computed signature.
 //
 // Steps:
-//  1. Parse timestamp (t) and signature (v1) from the header.
+//  1. Parse timestamp (t) and all v1 signatures from the header.
 //  2. Reject events older than 5 minutes to prevent replay attacks.
-//  3. Compute HMAC-SHA256(secret, "<t>.<rawBody>") and compare with v1.
+//  3. Compute HMAC-SHA256(secret, "<t>.<rawBody>") and accept if any v1 matches.
 func verifyStripeSignature(payload []byte, sigHeader, secret string) error {
 	if sigHeader == "" || secret == "" {
 		return fmt.Errorf("missing Stripe-Signature header or webhook secret")
 	}
 
-	var timestamp, v1Sig string
+	var timestamp string
+	var v1Sigs []string
 	for _, part := range strings.Split(sigHeader, ",") {
 		kv := strings.SplitN(part, "=", 2)
 		if len(kv) != 2 {
@@ -112,11 +116,11 @@ func verifyStripeSignature(payload []byte, sigHeader, secret string) error {
 		case "t":
 			timestamp = kv[1]
 		case "v1":
-			v1Sig = kv[1]
+			v1Sigs = append(v1Sigs, kv[1])
 		}
 	}
 
-	if timestamp == "" || v1Sig == "" {
+	if timestamp == "" || len(v1Sigs) == 0 {
 		return fmt.Errorf("invalid Stripe-Signature header format")
 	}
 
@@ -139,10 +143,12 @@ func verifyStripeSignature(payload []byte, sigHeader, secret string) error {
 	mac.Write([]byte(signedPayload))
 	expected := hex.EncodeToString(mac.Sum(nil))
 
-	// Use hmac.Equal for constant-time comparison (prevents timing attacks)
-	if !hmac.Equal([]byte(expected), []byte(v1Sig)) {
-		return fmt.Errorf("webhook signature mismatch")
+	// Accept if any v1 signature matches (supports secret rotation)
+	for _, v1Sig := range v1Sigs {
+		if hmac.Equal([]byte(expected), []byte(v1Sig)) {
+			return nil
+		}
 	}
 
-	return nil
+	return fmt.Errorf("webhook signature mismatch")
 }

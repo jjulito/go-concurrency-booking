@@ -99,6 +99,33 @@ func TestVerifyStripeSignature_WrongSignature(t *testing.T) {
 	}
 }
 
+func TestVerifyStripeSignature_MultipleV1_SecondMatches(t *testing.T) {
+	secret := "whsec_test_secret"
+	payload := []byte(`{"type":"checkout.session.completed"}`)
+	ts := time.Now().Unix()
+	correctSig := computeSignature(t, payload, secret, ts)
+	oldSig := computeSignature(t, payload, "old_rotated_secret", ts)
+	// Stripe sends old secret's sig first, then current — second should match
+	header := fmt.Sprintf("t=%d,v1=%s,v1=%s", ts, oldSig, correctSig)
+
+	if err := verifyStripeSignature(payload, header, secret); err != nil {
+		t.Fatalf("expected success when second v1 matches, got: %v", err)
+	}
+}
+
+func TestVerifyStripeSignature_MultipleV1_NoneMatch(t *testing.T) {
+	payload := []byte(`{"type":"checkout.session.completed"}`)
+	ts := time.Now().Unix()
+	sig1 := computeSignature(t, payload, "wrong1", ts)
+	sig2 := computeSignature(t, payload, "wrong2", ts)
+	header := fmt.Sprintf("t=%d,v1=%s,v1=%s", ts, sig1, sig2)
+
+	err := verifyStripeSignature(payload, header, "actual_secret")
+	if err == nil {
+		t.Fatal("expected error when no v1 signature matches")
+	}
+}
+
 func TestVerifyStripeSignature_TamperedPayload(t *testing.T) {
 	secret := "whsec_test_secret"
 	original := []byte(`{"type":"checkout.session.completed"}`)
