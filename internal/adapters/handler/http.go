@@ -6,8 +6,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"reserva/internal/core/domain"
-	"reserva/internal/core/ports"
+	"github.com/jjulito/go-concurrency-booking/internal/core/domain"
+	"github.com/jjulito/go-concurrency-booking/internal/core/ports"
 )
 
 type HTTPHandler struct {
@@ -24,16 +24,17 @@ func NewHTTPHandler(bookingService ports.BookingService, stripeWebhookSecret str
 
 func (h *HTTPHandler) RegisterRoutes(router *gin.Engine, middlewares ...gin.HandlerFunc) {
 	v1 := router.Group("/api/v1")
-	v1.Use(middlewares...)
 
-	// Public routes — no authentication required
+	// Public routes — no rate limiting (webhook must never be throttled or
+	// Stripe will back off and retries will pile up).
 	v1.GET("/events", h.ListEvents)
 	v1.GET("/events/:id/seats", h.GetEventSeats)
 	v1.POST("/webhooks/stripe", h.HandleStripeWebhook)
 
-	// Protected routes — require a valid X-User-ID header (set by the API gateway
-	// after JWT verification; the service never handles raw tokens directly).
+	// Protected routes — rate limiter + auth middleware applied here only,
+	// so public and webhook endpoints are not affected.
 	protected := v1.Group("/")
+	protected.Use(middlewares...)
 	protected.Use(AuthMiddleware())
 	{
 		protected.GET("/reservations/:id", h.GetReservation)
