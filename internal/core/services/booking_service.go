@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"reserva/internal/core/domain"
-	"reserva/internal/core/ports"
+	"github.com/jjulito/go-concurrency-booking/internal/core/domain"
+	"github.com/jjulito/go-concurrency-booking/internal/core/ports"
 )
 
 type BookingService struct {
@@ -87,7 +87,7 @@ func (s *BookingService) CreateReservation(ctx context.Context, userID, seatID, 
 
 		// Validate the seat actually belongs to the requested event
 		if seat.EventID != eventID {
-			return domain.ErrSeatUnavailable
+			return domain.ErrSeatNotFound
 		}
 
 		if seat.Status != domain.SeatAvailable {
