@@ -40,7 +40,10 @@ func (s *BookingService) ListEvents(ctx context.Context) ([]domain.Event, error)
 
 func (s *BookingService) GetEventSeats(ctx context.Context, eventID uuid.UUID) ([]domain.Seat, error) {
 	event, err := s.eventRepo.GetEvent(ctx, eventID)
-	if err != nil || event == nil || !event.IsActive {
+	if err != nil {
+		return nil, err // propagates ErrEventNotFound or infra errors as-is
+	}
+	if event == nil || !event.IsActive {
 		return nil, domain.ErrEventNotFound
 	}
 	return s.seatRepo.GetSeatsByEvent(ctx, eventID)
@@ -69,7 +72,10 @@ func (s *BookingService) CreateReservation(ctx context.Context, userID, seatID, 
 	err = s.transactor.WithinTransaction(ctx, func(ctx context.Context) error {
 		// Validate the event exists and is currently active
 		event, err := s.eventRepo.GetEvent(ctx, eventID)
-		if err != nil || event == nil || !event.IsActive {
+		if err != nil {
+			return err // propagates ErrEventNotFound or infra errors as-is
+		}
+		if event == nil || !event.IsActive {
 			return domain.ErrEventNotFound
 		}
 
