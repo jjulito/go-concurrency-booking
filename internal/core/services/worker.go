@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"time"
 
-	"reserva/internal/core/ports"
+	"github.com/jjulito/reserva/internal/core/ports"
 )
 
 type CleanupWorker struct {

@@ -10,7 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"reserva/internal/core/domain"
+	"github.com/jjulito/reserva/internal/core/domain"
 )
 
 // --- Mock Service ---

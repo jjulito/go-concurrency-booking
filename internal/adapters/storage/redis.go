@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
-	"reserva/config"
+	"github.com/jjulito/reserva/config"
 )
 
 func NewRedisClient(cfg *config.Config) (*redis.Client, error) {

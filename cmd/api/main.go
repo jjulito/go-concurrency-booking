@@ -10,10 +10,10 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"reserva/config"
-	"reserva/internal/adapters/handler"
-	"reserva/internal/adapters/storage"
-	"reserva/internal/core/services"
+	"github.com/jjulito/reserva/config"
+	"github.com/jjulito/reserva/internal/adapters/handler"
+	"github.com/jjulito/reserva/internal/adapters/storage"
+	"github.com/jjulito/reserva/internal/core/services"
 )
 
 func main() {

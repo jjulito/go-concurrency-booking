@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"reserva/internal/core/domain"
+	"github.com/jjulito/reserva/internal/core/domain"
 )
 
 // SeatRepository defines storage operations for seats

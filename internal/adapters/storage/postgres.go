@@ -9,7 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"reserva/config"
+	"github.com/jjulito/reserva/config"
 )
 
 // querier is satisfied by both *pgxpool.Pool and pgx.Tx, enabling

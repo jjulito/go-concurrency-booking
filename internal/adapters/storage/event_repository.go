@@ -6,7 +6,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"reserva/internal/core/domain"
+	"github.com/jjulito/reserva/internal/core/domain"
 )
 
 type PostgresEventRepository struct {
