@@ -52,6 +52,6 @@ CREATE TABLE IF NOT EXISTS reservations (
 CREATE INDEX idx_seats_event_status ON seats(event_id, status);
 CREATE INDEX idx_reservations_user ON reservations(user_id);
 CREATE INDEX idx_reservations_status ON reservations(status);
--- Composite partial index for the expired-reservations cleanup query:
+-- Partial index for the expired-reservations cleanup query:
 -- WHERE status = 'PENDING' AND expires_at < NOW()
 CREATE INDEX idx_reservations_pending_expires ON reservations(expires_at) WHERE status = 'PENDING';
