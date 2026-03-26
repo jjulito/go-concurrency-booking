@@ -52,7 +52,7 @@ type Seat struct {
 	EventID    uuid.UUID  `json:"event_id"`
 	Number     string     `json:"seat_number"`
 	Category   string     `json:"category"`
-	Price      float64    `json:"price"`
+	Price      int64      `json:"price"` // minor currency units (cents)
 	Status     SeatStatus `json:"status"`
 	Version    int        `json:"version"` // Optimistic Locking
 	ReservedBy *uuid.UUID `json:"reserved_by,omitempty"`
@@ -65,7 +65,7 @@ type Reservation struct {
 	SeatID    uuid.UUID         `json:"seat_id"`
 	EventID   uuid.UUID         `json:"event_id"`
 	Status    ReservationStatus `json:"status"`
-	Amount    float64           `json:"amount"`
+	Amount    int64             `json:"amount"` // minor currency units (cents)
 	CreatedAt time.Time         `json:"created_at"`
 	ExpiresAt time.Time         `json:"expires_at"`
 }
