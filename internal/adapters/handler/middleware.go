@@ -1,75 +1,65 @@
 package handler
 
 import (
-	"context"
 	"fmt"
 	"net/http"
-	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
 
-const (
-	MaxConcurrentUsers = 100 // Example limit
-	QueueKey           = "waiting_room:queue"
-)
+// userIDKey is the gin context key under which the authenticated user's UUID is stored.
+const userIDKey = "userID"
 
-// VirtualQueueMiddleware limits concurrent access by checking the total number of active users.
-// If the limit is reached, it returns a ServiceUnavailable status.
-func VirtualQueueMiddleware(redisClient *redis.Client) gin.HandlerFunc {
+// AuthMiddleware reads the X-User-ID header and injects the parsed UUID into the
+// gin context. In production this header is set by the API gateway after verifying
+// the JWT — the service itself never handles raw tokens.
+func AuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		ctx := c.Request.Context()
-		
-		// Check current system load using a global counter
-		activeUsers, err := redisClient.Get(ctx, "active_users").Int()
-		if err != nil && err != redis.Nil {
-			// Fail securely on Redis error
-			c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": "Service busy"})
+		raw := c.GetHeader("X-User-ID")
+		if raw == "" {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Missing X-User-ID header"})
 			return
 		}
-
-		if activeUsers >= MaxConcurrentUsers {
-			// Redirect to waiting room or return 503
-			c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{
-				"error": "Server is full. Please try again later.",
-				"waiting_room_url": "/queue",
-			})
+		userID, err := uuid.Parse(raw)
+		if err != nil {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Invalid X-User-ID header: must be a UUID"})
 			return
 		}
-
-		// Increment active user count
-		redisClient.Incr(ctx, "active_users")
-
+		c.Set(userIDKey, userID)
 		c.Next()
-		
-		// Decrement count when request completes
-		go redisClient.Decr(context.Background(), "active_users")
 	}
 }
 
-// Simple Rate Limiter Middleware
+// rateLimitScript atomically increments the request counter and sets a 1-minute
+// TTL only on the first request. Using a Lua script ensures the INCR and
+// conditional EXPIRE execute as a single Redis operation — no race window where
+// the key could exist without a TTL and block an IP address permanently.
+var rateLimitScript = redis.NewScript(`
+	local count = redis.call('INCR', KEYS[1])
+	if count == 1 then
+		redis.call('EXPIRE', KEYS[1], 60)
+	end
+	return count
+`)
+
+// RateLimiterMiddleware limits each IP to 60 requests per minute.
 func RateLimiterMiddleware(redisClient *redis.Client) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		ip := c.ClientIP()
-		key := fmt.Sprintf("rate_limit:%s", ip)
-		
-		// Allow 10 requests per minute
-		count, err := redisClient.Incr(c.Request.Context(), key).Result()
+		key := fmt.Sprintf("rate_limit:%s", c.ClientIP())
+
+		count, err := rateLimitScript.Run(c.Request.Context(), redisClient, []string{key}).Int64()
 		if err != nil {
 			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "Internal Error"})
 			return
 		}
-		
-		if count == 1 {
-			redisClient.Expire(c.Request.Context(), key, 1*time.Minute)
-		}
-		
+
 		if count > 60 {
 			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{"error": "Too many requests"})
 			return
 		}
-		
+
 		c.Next()
 	}
 }

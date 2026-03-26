@@ -17,9 +17,9 @@ import (
 type MockBookingService struct {
 	ListEventsFunc        func(ctx context.Context) ([]domain.Event, error)
 	GetEventSeatsFunc     func(ctx context.Context, eventID uuid.UUID) ([]domain.Seat, error)
-	CreateReservationFunc  func(ctx context.Context, userID, seatID, eventID uuid.UUID) (*domain.Reservation, error)
-	GetReservationFunc     func(ctx context.Context, reservationID uuid.UUID) (*domain.Reservation, error)
-	CancelReservationFunc  func(ctx context.Context, reservationID uuid.UUID) error
+	CreateReservationFunc func(ctx context.Context, userID, seatID, eventID uuid.UUID) (*domain.Reservation, error)
+	GetReservationFunc    func(ctx context.Context, reservationID uuid.UUID) (*domain.Reservation, error)
+	CancelReservationFunc func(ctx context.Context, reservationID, userID uuid.UUID) error
 	ConfirmReservationFunc func(ctx context.Context, reservationID uuid.UUID) error
 }
 
@@ -47,9 +47,9 @@ func (m *MockBookingService) GetReservation(ctx context.Context, reservationID u
 	}
 	return nil, nil
 }
-func (m *MockBookingService) CancelReservation(ctx context.Context, reservationID uuid.UUID) error {
+func (m *MockBookingService) CancelReservation(ctx context.Context, reservationID, userID uuid.UUID) error {
 	if m.CancelReservationFunc != nil {
-		return m.CancelReservationFunc(ctx, reservationID)
+		return m.CancelReservationFunc(ctx, reservationID, userID)
 	}
 	return nil
 }
@@ -63,7 +63,6 @@ func (m *MockBookingService) ConfirmReservation(ctx context.Context, reservation
 // --- Tests ---
 
 func TestHTTPHandler_ListEvents_Success(t *testing.T) {
-	// Setup
 	gin.SetMode(gin.TestMode)
 	mockSvc := &MockBookingService{
 		ListEventsFunc: func(ctx context.Context) ([]domain.Event, error) {
@@ -72,76 +71,95 @@ func TestHTTPHandler_ListEvents_Success(t *testing.T) {
 			}, nil
 		},
 	}
-	h := NewHTTPHandler(mockSvc)
+	h := NewHTTPHandler(mockSvc, "")
 	router := gin.New()
 	h.RegisterRoutes(router)
 
-	// Execution
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequest("GET", "/api/v1/events", nil)
 	router.ServeHTTP(w, req)
 
-	// Verification
 	if w.Code != http.StatusOK {
 		t.Errorf("Expected status 200, got %d", w.Code)
 	}
 }
 
 func TestHTTPHandler_CreateReservation_Success(t *testing.T) {
-	// Setup
 	gin.SetMode(gin.TestMode)
 	mockSvc := &MockBookingService{
 		CreateReservationFunc: func(ctx context.Context, u, s, e uuid.UUID) (*domain.Reservation, error) {
 			return domain.NewReservation(u, s, e, 0), nil
 		},
 	}
-	h := NewHTTPHandler(mockSvc)
+	h := NewHTTPHandler(mockSvc, "")
 	router := gin.New()
 	h.RegisterRoutes(router)
 
+	// user_id is no longer in the body — it comes from the X-User-ID header
 	payload := map[string]string{
-		"user_id":  uuid.New().String(),
 		"seat_id":  uuid.New().String(),
 		"event_id": uuid.New().String(),
 	}
 	body, _ := json.Marshal(payload)
 
-	// Execution
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequest("POST", "/api/v1/reservations", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-User-ID", uuid.New().String())
 	router.ServeHTTP(w, req)
 
-	// Verification
 	if w.Code != http.StatusCreated {
 		t.Errorf("Expected status 201, got %d body: %s", w.Code, w.Body.String())
 	}
 }
 
 func TestHTTPHandler_CreateReservation_Locked(t *testing.T) {
-	// Setup
+	gin.SetMode(gin.TestMode)
 	mockSvc := &MockBookingService{
 		CreateReservationFunc: func(ctx context.Context, u, s, e uuid.UUID) (*domain.Reservation, error) {
 			return nil, domain.ErrSeatLocked
 		},
 	}
-	h := NewHTTPHandler(mockSvc)
+	h := NewHTTPHandler(mockSvc, "")
 	router := gin.New()
 	h.RegisterRoutes(router)
 
 	payload := map[string]string{
-		"user_id":  uuid.New().String(),
 		"seat_id":  uuid.New().String(),
 		"event_id": uuid.New().String(),
 	}
 	body, _ := json.Marshal(payload)
 
-	// Execution
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequest("POST", "/api/v1/reservations", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-User-ID", uuid.New().String())
 	router.ServeHTTP(w, req)
 
-	// Verification
 	if w.Code != http.StatusConflict {
 		t.Errorf("Expected status 409, got %d", w.Code)
+	}
+}
+
+func TestHTTPHandler_CreateReservation_MissingAuth(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h := NewHTTPHandler(&MockBookingService{}, "")
+	router := gin.New()
+	h.RegisterRoutes(router)
+
+	payload := map[string]string{
+		"seat_id":  uuid.New().String(),
+		"event_id": uuid.New().String(),
+	}
+	body, _ := json.Marshal(payload)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/api/v1/reservations", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	// Deliberately no X-User-ID header
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("Expected status 401, got %d", w.Code)
 	}
 }

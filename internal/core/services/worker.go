@@ -2,7 +2,7 @@ package services
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"time"
 
 	"github.com/jjulito/reserva/internal/core/ports"
@@ -42,17 +42,22 @@ func (w *CleanupWorker) Start(ctx context.Context) {
 }
 
 func (w *CleanupWorker) processExpiredReservations(ctx context.Context) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("panic in cleanup worker", "recover", r)
+		}
+	}()
+
 	reservations, err := w.reservationRepo.GetExpiredReservations(ctx)
 	if err != nil {
-		log.Printf("Error fetching expired reservations: %v", err)
+		slog.Error("Failed to fetch expired reservations", "error", err)
 		return
 	}
 
 	for _, res := range reservations {
-		// Use the service to cancel, ensuring logic (releasing seats) is consistent
-		log.Printf("Cancelling expired reservation: %s", res.ID)
-		if err := w.bookingService.CancelReservation(ctx, res.ID); err != nil {
-			log.Printf("Error cancelling reservation %s: %v", res.ID, err)
+		slog.Info("Cancelling expired reservation", "reservation_id", res.ID)
+		if err := w.bookingService.CancelReservation(ctx, res.ID, res.UserID); err != nil {
+			slog.Error("Failed to cancel expired reservation", "reservation_id", res.ID, "error", err)
 		}
 	}
 }

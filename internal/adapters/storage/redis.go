@@ -14,9 +14,9 @@ func NewRedisClient(cfg *config.Config) (*redis.Client, error) {
 
 	client := redis.NewClient(&redis.Options{
 		Addr:         addr,
-		Password:     "", // no password set
-		DB:           0,  // use default DB
-		PoolSize:     50, // Tuning for concurrency
+		Password:     cfg.RedisPassword,
+		DB:           cfg.RedisDB,
+		PoolSize:     50,
 		MinIdleConns: 10,
 	})
 
