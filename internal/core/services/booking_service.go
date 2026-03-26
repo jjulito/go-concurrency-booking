@@ -73,7 +73,7 @@ func (s *BookingService) CreateReservation(ctx context.Context, userID, seatID, 
 			return domain.ErrEventNotFound
 		}
 
-		// Fetch the seat (also acquires the row for version check later)
+		// Fetch the seat for validation and later optimistic version check
 		seat, err := s.seatRepo.GetSeat(ctx, seatID)
 		if err != nil {
 			return fmt.Errorf("failed to get seat: %w", err)
