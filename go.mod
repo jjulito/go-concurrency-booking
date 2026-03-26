@@ -1,4 +1,4 @@
-module reserva
+module github.com/jjulito/reserva
 
 go 1.21
 
