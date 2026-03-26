@@ -61,11 +61,12 @@ func main() {
 
 	// 6. Router
 	router := gin.Default()
-	router.Use(handler.RateLimiterMiddleware(redisClient))
-	httpHandler.RegisterRoutes(router)
 
-	// Health endpoints — registered outside the API group, bypass rate limiting
-	// and auth so k8s probes can reach them unconditionally.
+	// Health endpoints — registered on the bare engine with no middleware so
+	// k8s probes can always reach them, even under heavy load.
+	//
+	// The rate limiter is applied only to the /api/v1 group inside
+	// RegisterRoutes, so these endpoints are never throttled.
 	router.GET("/healthz", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
@@ -82,6 +83,9 @@ func main() {
 		}
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
+
+	// API routes — rate limiter scoped to /api/v1 so health probes are exempt.
+	httpHandler.RegisterRoutes(router, handler.RateLimiterMiddleware(redisClient))
 
 	// 7. Cancellable context tied to OS signals.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

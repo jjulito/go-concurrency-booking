@@ -22,8 +22,9 @@ func NewHTTPHandler(bookingService ports.BookingService, stripeWebhookSecret str
 	}
 }
 
-func (h *HTTPHandler) RegisterRoutes(router *gin.Engine) {
+func (h *HTTPHandler) RegisterRoutes(router *gin.Engine, middlewares ...gin.HandlerFunc) {
 	v1 := router.Group("/api/v1")
+	v1.Use(middlewares...)
 
 	// Public routes — no authentication required
 	v1.GET("/events", h.ListEvents)
