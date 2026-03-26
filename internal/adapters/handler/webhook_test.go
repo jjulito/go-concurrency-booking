@@ -126,6 +126,19 @@ func TestVerifyStripeSignature_MultipleV1_NoneMatch(t *testing.T) {
 	}
 }
 
+func TestVerifyStripeSignature_SpacesInHeader(t *testing.T) {
+	secret := "whsec_test_secret"
+	payload := []byte(`{"type":"checkout.session.completed"}`)
+	ts := time.Now().Unix()
+	sig := computeSignature(t, payload, secret, ts)
+	// Stripe may send spaces after commas (e.g. "t=..., v1=...")
+	header := fmt.Sprintf("t=%d, v1=%s", ts, sig)
+
+	if err := verifyStripeSignature(payload, header, secret); err != nil {
+		t.Fatalf("expected no error for header with spaces after comma, got: %v", err)
+	}
+}
+
 func TestVerifyStripeSignature_TamperedPayload(t *testing.T) {
 	secret := "whsec_test_secret"
 	original := []byte(`{"type":"checkout.session.completed"}`)

@@ -15,7 +15,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"reserva/internal/core/domain"
+	"github.com/jjulito/go-concurrency-booking/internal/core/domain"
 )
 
 // StripeWebhookPayload matches the structure of Stripe event objects
@@ -108,15 +108,15 @@ func verifyStripeSignature(payload []byte, sigHeader, secret string) error {
 	var timestamp string
 	var v1Sigs []string
 	for _, part := range strings.Split(sigHeader, ",") {
-		kv := strings.SplitN(part, "=", 2)
+		kv := strings.SplitN(strings.TrimSpace(part), "=", 2)
 		if len(kv) != 2 {
 			continue
 		}
-		switch kv[0] {
+		switch strings.TrimSpace(kv[0]) {
 		case "t":
-			timestamp = kv[1]
+			timestamp = strings.TrimSpace(kv[1])
 		case "v1":
-			v1Sigs = append(v1Sigs, kv[1])
+			v1Sigs = append(v1Sigs, strings.TrimSpace(kv[1]))
 		}
 	}
 
