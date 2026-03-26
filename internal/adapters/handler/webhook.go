@@ -15,7 +15,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/jjulito/go-concurrency-booking/internal/core/domain"
+	"github.com/jjulito/reserva/internal/core/domain"
 )
 
 // StripeWebhookPayload matches the structure of Stripe event objects

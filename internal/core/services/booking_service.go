@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jjulito/go-concurrency-booking/internal/core/domain"
-	"github.com/jjulito/go-concurrency-booking/internal/core/ports"
+	"github.com/jjulito/reserva/internal/core/domain"
+	"github.com/jjulito/reserva/internal/core/ports"
 )
 
 type BookingService struct {
