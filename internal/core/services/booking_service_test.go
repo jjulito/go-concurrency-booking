@@ -2,11 +2,12 @@ package services
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jjulito/reserva/internal/core/domain"
+	"reserva/internal/core/domain"
 )
 
 // --- Mocks ---
@@ -17,15 +18,16 @@ type mockLockRepo struct {
 	Acquired    bool
 }
 
-func (m *mockLockRepo) AcquireLock(ctx context.Context, key string, ttl time.Duration) (bool, error) {
+func (m *mockLockRepo) AcquireLock(ctx context.Context, key string, ttl time.Duration) (bool, string, error) {
 	m.CapturedKey = key
 	if m.ShouldFail {
-		return false, nil // Lock taken
+		return false, "", nil // Lock taken by another process
 	}
 	m.Acquired = true
-	return true, nil
+	return true, "test-token", nil
 }
-func (m *mockLockRepo) ReleaseLock(ctx context.Context, key string) error {
+
+func (m *mockLockRepo) ReleaseLock(ctx context.Context, key, token string) error {
 	m.Acquired = false
 	return nil
 }
@@ -57,7 +59,7 @@ func (m *mockResRepo) GetReservation(ctx context.Context, id uuid.UUID) (*domain
 	if m.CreatedRes != nil && m.CreatedRes.ID == id {
 		return m.CreatedRes, nil
 	}
-	return nil, nil
+	return nil, domain.ErrReservationNotFound
 }
 func (m *mockResRepo) UpdateStatus(ctx context.Context, id uuid.UUID, status domain.ReservationStatus) error {
 	if m.CreatedRes != nil && m.CreatedRes.ID == id {
@@ -71,13 +73,21 @@ func (m *mockResRepo) GetExpiredReservations(ctx context.Context) ([]domain.Rese
 
 type mockEventRepo struct{}
 
-func (m *mockEventRepo) GetEvent(ctx context.Context, id uuid.UUID) (*domain.Event, error)   { return nil, nil }
+func (m *mockEventRepo) GetEvent(ctx context.Context, id uuid.UUID) (*domain.Event, error) {
+	return &domain.Event{ID: id, IsActive: true}, nil
+}
 func (m *mockEventRepo) ListEvents(ctx context.Context) ([]domain.Event, error) { return nil, nil }
+
+// mockTransactor executes fn directly without a real DB transaction.
+type mockTransactor struct{}
+
+func (m *mockTransactor) WithinTransaction(ctx context.Context, fn func(ctx context.Context) error) error {
+	return fn(ctx)
+}
 
 // --- Tests ---
 
 func TestBookingService_CreateReservation_Success(t *testing.T) {
-	// Setup
 	seatID := uuid.New()
 	userID := uuid.New()
 	eventID := uuid.New()
@@ -86,19 +96,19 @@ func TestBookingService_CreateReservation_Success(t *testing.T) {
 	seatRepo := &mockSeatRepo{
 		SeatToReturn: &domain.Seat{
 			ID:      seatID,
+			EventID: eventID, // must match for the seat-event ownership check
 			Status:  domain.SeatAvailable,
 			Version: 1,
 		},
 	}
 	resRepo := &mockResRepo{}
 	eventRepo := &mockEventRepo{}
+	transactor := &mockTransactor{}
 
-	svc := NewBookingService(seatRepo, resRepo, eventRepo, lockRepo)
+	svc := NewBookingService(seatRepo, resRepo, eventRepo, lockRepo, transactor)
 
-	// Execution
 	res, err := svc.CreateReservation(context.Background(), userID, seatID, eventID)
 
-	// Verification
 	if err != nil {
 		t.Errorf("Expected no error, got %v", err)
 	}
@@ -114,31 +124,32 @@ func TestBookingService_CreateReservation_Success(t *testing.T) {
 }
 
 func TestBookingService_CreateReservation_Locked(t *testing.T) {
-	// Setup
-	lockRepo := &mockLockRepo{ShouldFail: true} // Simulates lock already taken
-	svc := NewBookingService(&mockSeatRepo{}, &mockResRepo{}, &mockEventRepo{}, lockRepo)
+	lockRepo := &mockLockRepo{ShouldFail: true}
+	svc := NewBookingService(&mockSeatRepo{}, &mockResRepo{}, &mockEventRepo{}, lockRepo, &mockTransactor{})
 
-	// Execution
 	_, err := svc.CreateReservation(context.Background(), uuid.New(), uuid.New(), uuid.New())
 
-	// Verification
-	if err != domain.ErrSeatLocked {
+	if !errors.Is(err, domain.ErrSeatLocked) {
 		t.Errorf("Expected ErrSeatLocked, got %v", err)
 	}
 }
 
 func TestBookingService_CreateReservation_SeatUnavailable(t *testing.T) {
-	// Setup
+	eventID := uuid.New()
+	seatID := uuid.New()
 	seatRepo := &mockSeatRepo{
-		SeatToReturn: &domain.Seat{Status: domain.SeatLocked}, // Seat already locked in DB
+		// EventID matches so the ownership check passes — the seat STATUS is what should fail
+		SeatToReturn: &domain.Seat{
+			ID:      seatID,
+			EventID: eventID,
+			Status:  domain.SeatLocked, // not AVAILABLE → ErrSeatUnavailable
+		},
 	}
-	svc := NewBookingService(seatRepo, &mockResRepo{}, &mockEventRepo{}, &mockLockRepo{})
+	svc := NewBookingService(seatRepo, &mockResRepo{}, &mockEventRepo{}, &mockLockRepo{}, &mockTransactor{})
 
-	// Execution
-	_, err := svc.CreateReservation(context.Background(), uuid.New(), uuid.New(), uuid.New())
+	_, err := svc.CreateReservation(context.Background(), uuid.New(), seatID, eventID)
 
-	// Verification
-	if err != domain.ErrSeatUnavailable {
+	if !errors.Is(err, domain.ErrSeatUnavailable) {
 		t.Errorf("Expected ErrSeatUnavailable, got %v", err)
 	}
 }
