@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
@@ -65,7 +66,13 @@ func (s *BookingService) CreateReservation(ctx context.Context, userID, seatID, 
 	if !acquired {
 		return nil, domain.ErrSeatLocked
 	}
-	defer s.lockRepo.ReleaseLock(ctx, lockKey, token)
+	defer func() {
+		releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+		defer cancel()
+		if err := s.lockRepo.ReleaseLock(releaseCtx, lockKey, token); err != nil {
+			slog.Error("failed to release seat lock", "key", lockKey, "error", err)
+		}
+	}()
 
 	// 2. Atomic transaction: validate, then write seat + reservation together
 	var reservation *domain.Reservation

@@ -8,6 +8,17 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+// releaseLockScript atomically deletes a Redis key only if the stored value
+// matches the provided token, preventing a process from releasing a lock it no
+// longer owns (e.g., after TTL expiry and re-acquisition by another process).
+var releaseLockScript = redis.NewScript(`
+	if redis.call("get", KEYS[1]) == ARGV[1] then
+		return redis.call("del", KEYS[1])
+	else
+		return 0
+	end
+`)
+
 type RedisLockRepository struct {
 	client *redis.Client
 }
@@ -35,12 +46,5 @@ func (r *RedisLockRepository) AcquireLock(ctx context.Context, key string, ttl t
 // Uses a Lua script to make the check-and-delete atomic, preventing
 // a process from accidentally deleting another process's lock after TTL expiry.
 func (r *RedisLockRepository) ReleaseLock(ctx context.Context, key, token string) error {
-	script := redis.NewScript(`
-		if redis.call("get", KEYS[1]) == ARGV[1] then
-			return redis.call("del", KEYS[1])
-		else
-			return 0
-		end
-	`)
-	return script.Run(ctx, r.client, []string{key}, token).Err()
+	return releaseLockScript.Run(ctx, r.client, []string{key}, token).Err()
 }

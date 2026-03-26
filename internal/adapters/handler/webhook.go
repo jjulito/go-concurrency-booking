@@ -31,6 +31,11 @@ type StripeWebhookPayload struct {
 	} `json:"data"`
 }
 
+// maxWebhookBodyBytes caps the Stripe webhook payload at 64 KB.
+// Stripe payloads are typically a few KB; this prevents oversized requests
+// from exhausting memory on the webhook endpoint.
+const maxWebhookBodyBytes = 65536
+
 // HandleStripeWebhook godoc
 // @Summary Handle Stripe payment events
 // @Tags webhooks
@@ -39,6 +44,10 @@ type StripeWebhookPayload struct {
 // @Success 200 {string} string "Received"
 // @Router /webhooks/stripe [post]
 func (h *HTTPHandler) HandleStripeWebhook(c *gin.Context) {
+	// Limit the body to 64 KB — Stripe payloads are typically a few KB.
+	// This prevents excessive memory usage from oversized or malicious requests.
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxWebhookBodyBytes)
+
 	// Read raw body first — signature verification requires the exact bytes Stripe sent.
 	rawBody, err := io.ReadAll(c.Request.Body)
 	if err != nil {

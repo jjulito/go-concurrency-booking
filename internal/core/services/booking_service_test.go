@@ -48,7 +48,8 @@ func (m *mockSeatRepo) UpdateSeatStatus(ctx context.Context, seatID uuid.UUID, s
 }
 
 type mockResRepo struct {
-	CreatedRes *domain.Reservation
+	CreatedRes      *domain.Reservation
+	UpdateStatusErr error
 }
 
 func (m *mockResRepo) CreateReservation(ctx context.Context, res *domain.Reservation) error {
@@ -62,6 +63,9 @@ func (m *mockResRepo) GetReservation(ctx context.Context, id uuid.UUID) (*domain
 	return nil, domain.ErrReservationNotFound
 }
 func (m *mockResRepo) UpdateStatus(ctx context.Context, id uuid.UUID, status domain.ReservationStatus) error {
+	if m.UpdateStatusErr != nil {
+		return m.UpdateStatusErr
+	}
 	if m.CreatedRes != nil && m.CreatedRes.ID == id {
 		m.CreatedRes.Status = status
 	}
@@ -151,5 +155,156 @@ func TestBookingService_CreateReservation_SeatUnavailable(t *testing.T) {
 
 	if !errors.Is(err, domain.ErrSeatUnavailable) {
 		t.Errorf("Expected ErrSeatUnavailable, got %v", err)
+	}
+}
+
+// --- CancelReservation tests ---
+
+func TestBookingService_CancelReservation_Success(t *testing.T) {
+	userID := uuid.New()
+	seatID := uuid.New()
+	eventID := uuid.New()
+	res := &domain.Reservation{
+		ID:        uuid.New(),
+		UserID:    userID,
+		SeatID:    seatID,
+		EventID:   eventID,
+		Status:    domain.ReservationPending,
+		ExpiresAt: time.Now().Add(5 * time.Minute),
+	}
+	resRepo := &mockResRepo{CreatedRes: res}
+	seatRepo := &mockSeatRepo{SeatToReturn: &domain.Seat{ID: seatID, EventID: eventID, Status: domain.SeatLocked, Version: 1}}
+	svc := NewBookingService(seatRepo, resRepo, &mockEventRepo{}, &mockLockRepo{}, &mockTransactor{})
+
+	err := svc.CancelReservation(context.Background(), res.ID, userID)
+
+	if err != nil {
+		t.Errorf("Expected no error, got %v", err)
+	}
+	if resRepo.CreatedRes.Status != domain.ReservationCancelled {
+		t.Errorf("Expected status CANCELLED, got %s", resRepo.CreatedRes.Status)
+	}
+}
+
+func TestBookingService_CancelReservation_Unauthorized(t *testing.T) {
+	ownerID := uuid.New()
+	otherUserID := uuid.New()
+	res := &domain.Reservation{
+		ID:        uuid.New(),
+		UserID:    ownerID,
+		Status:    domain.ReservationPending,
+		ExpiresAt: time.Now().Add(5 * time.Minute),
+	}
+	resRepo := &mockResRepo{CreatedRes: res}
+	svc := NewBookingService(&mockSeatRepo{}, resRepo, &mockEventRepo{}, &mockLockRepo{}, &mockTransactor{})
+
+	err := svc.CancelReservation(context.Background(), res.ID, otherUserID)
+
+	if !errors.Is(err, domain.ErrUnauthorized) {
+		t.Errorf("Expected ErrUnauthorized, got %v", err)
+	}
+}
+
+func TestBookingService_CancelReservation_NonPending(t *testing.T) {
+	userID := uuid.New()
+	res := &domain.Reservation{
+		ID:        uuid.New(),
+		UserID:    userID,
+		Status:    domain.ReservationPaid, // not PENDING
+		ExpiresAt: time.Now().Add(5 * time.Minute),
+	}
+	resRepo := &mockResRepo{CreatedRes: res}
+	svc := NewBookingService(&mockSeatRepo{}, resRepo, &mockEventRepo{}, &mockLockRepo{}, &mockTransactor{})
+
+	err := svc.CancelReservation(context.Background(), res.ID, userID)
+
+	if !errors.Is(err, domain.ErrInvalidStatusTransition) {
+		t.Errorf("Expected ErrInvalidStatusTransition, got %v", err)
+	}
+}
+
+// --- ConfirmReservation tests ---
+
+func TestBookingService_ConfirmReservation_Success(t *testing.T) {
+	userID := uuid.New()
+	seatID := uuid.New()
+	eventID := uuid.New()
+	res := &domain.Reservation{
+		ID:        uuid.New(),
+		UserID:    userID,
+		SeatID:    seatID,
+		EventID:   eventID,
+		Status:    domain.ReservationPending,
+		ExpiresAt: time.Now().Add(5 * time.Minute),
+	}
+	resRepo := &mockResRepo{CreatedRes: res}
+	seatRepo := &mockSeatRepo{SeatToReturn: &domain.Seat{ID: seatID, EventID: eventID, Status: domain.SeatLocked, Version: 1}}
+	svc := NewBookingService(seatRepo, resRepo, &mockEventRepo{}, &mockLockRepo{}, &mockTransactor{})
+
+	err := svc.ConfirmReservation(context.Background(), res.ID)
+
+	if err != nil {
+		t.Errorf("Expected no error, got %v", err)
+	}
+	if resRepo.CreatedRes.Status != domain.ReservationPaid {
+		t.Errorf("Expected status PAID, got %s", resRepo.CreatedRes.Status)
+	}
+}
+
+func TestBookingService_ConfirmReservation_AlreadyPaid(t *testing.T) {
+	res := &domain.Reservation{
+		ID:        uuid.New(),
+		Status:    domain.ReservationPaid, // already PAID — should be idempotent
+		ExpiresAt: time.Now().Add(5 * time.Minute),
+	}
+	resRepo := &mockResRepo{CreatedRes: res}
+	svc := NewBookingService(&mockSeatRepo{}, resRepo, &mockEventRepo{}, &mockLockRepo{}, &mockTransactor{})
+
+	err := svc.ConfirmReservation(context.Background(), res.ID)
+
+	if err != nil {
+		t.Errorf("Expected no error for already-PAID reservation (idempotent), got %v", err)
+	}
+}
+
+func TestBookingService_ConfirmReservation_Expired(t *testing.T) {
+	res := &domain.Reservation{
+		ID:        uuid.New(),
+		Status:    domain.ReservationPending,
+		ExpiresAt: time.Now().Add(-1 * time.Minute), // already expired
+	}
+	resRepo := &mockResRepo{CreatedRes: res}
+	svc := NewBookingService(&mockSeatRepo{}, resRepo, &mockEventRepo{}, &mockLockRepo{}, &mockTransactor{})
+
+	err := svc.ConfirmReservation(context.Background(), res.ID)
+
+	if !errors.Is(err, domain.ErrInvalidStatusTransition) {
+		t.Errorf("Expected ErrInvalidStatusTransition for expired reservation, got %v", err)
+	}
+}
+
+func TestBookingService_ConfirmReservation_SeatUpdateFails(t *testing.T) {
+	userID := uuid.New()
+	seatID := uuid.New()
+	eventID := uuid.New()
+	res := &domain.Reservation{
+		ID:        uuid.New(),
+		UserID:    userID,
+		SeatID:    seatID,
+		EventID:   eventID,
+		Status:    domain.ReservationPending,
+		ExpiresAt: time.Now().Add(5 * time.Minute),
+	}
+	resRepo := &mockResRepo{CreatedRes: res}
+	seatRepo := &mockSeatRepo{
+		SeatToReturn: &domain.Seat{ID: seatID, EventID: eventID, Status: domain.SeatLocked, Version: 1},
+		UpdateErr:    domain.ErrSeatUnavailable, // seat update fails
+	}
+	svc := NewBookingService(seatRepo, resRepo, &mockEventRepo{}, &mockLockRepo{}, &mockTransactor{})
+
+	err := svc.ConfirmReservation(context.Background(), res.ID)
+
+	if err == nil {
+		t.Error("Expected error when seat update fails, got nil")
 	}
 }

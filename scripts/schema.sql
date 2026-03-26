@@ -26,7 +26,7 @@ CREATE TABLE IF NOT EXISTS seats (
     event_id UUID NOT NULL REFERENCES events(id) ON DELETE CASCADE,
     seat_number VARCHAR(50) NOT NULL,
     category VARCHAR(50) DEFAULT 'STANDARD',
-    price BIGINT NOT NULL DEFAULT 0, -- minor currency units (cents)
+    price BIGINT NOT NULL DEFAULT 0 CHECK (price >= 0), -- minor currency units (cents)
     status seat_status DEFAULT 'AVAILABLE',
     version INT DEFAULT 0, -- Optimistic Lock Version
     reserved_by UUID, -- Can be null, references users(id)
@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS reservations (
     seat_id UUID NOT NULL REFERENCES seats(id),
     event_id UUID NOT NULL REFERENCES events(id),
     status reservation_status DEFAULT 'PENDING',
-    amount BIGINT NOT NULL, -- minor currency units (cents)
+    amount BIGINT NOT NULL CHECK (amount >= 0), -- minor currency units (cents)
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     expires_at TIMESTAMP WITH TIME ZONE NOT NULL
 );
