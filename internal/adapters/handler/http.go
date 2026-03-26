@@ -29,7 +29,6 @@ func (h *HTTPHandler) RegisterRoutes(router *gin.Engine, middlewares ...gin.Hand
 	// Public routes — no authentication required
 	v1.GET("/events", h.ListEvents)
 	v1.GET("/events/:id/seats", h.GetEventSeats)
-	v1.GET("/reservations/:id", h.GetReservation)
 	v1.POST("/webhooks/stripe", h.HandleStripeWebhook)
 
 	// Protected routes — require a valid X-User-ID header (set by the API gateway
@@ -37,6 +36,7 @@ func (h *HTTPHandler) RegisterRoutes(router *gin.Engine, middlewares ...gin.Hand
 	protected := v1.Group("/")
 	protected.Use(AuthMiddleware())
 	{
+		protected.GET("/reservations/:id", h.GetReservation)
 		protected.POST("/reservations", h.CreateReservation)
 		protected.POST("/reservations/:id/cancel", h.CancelReservation)
 	}
@@ -147,6 +147,8 @@ func (h *HTTPHandler) CreateReservation(c *gin.Context) {
 // @Success 200 {object} domain.Reservation
 // @Router /reservations/{id} [get]
 func (h *HTTPHandler) GetReservation(c *gin.Context) {
+	userID := c.MustGet(userIDKey).(uuid.UUID)
+
 	idStr := c.Param("id")
 	id, err := uuid.Parse(idStr)
 	if err != nil {
@@ -161,6 +163,11 @@ func (h *HTTPHandler) GetReservation(c *gin.Context) {
 		} else {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		}
+		return
+	}
+
+	if reservation.UserID != userID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "You are not the owner of this reservation"})
 		return
 	}
 
